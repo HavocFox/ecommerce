@@ -275,7 +275,7 @@ def delete_product(id):
 
     result = db.session.execute(query)
 
-    if result.rowcount == 0:
+    if result.rowcount == 0:                # No products?
         return jsonify({'Error': 'Product not found'}), 404
     
     db.session.commit()
@@ -286,35 +286,78 @@ def delete_product(id):
 # ==================== Order Operations ================================
 
 class OrderSchema(ma.Schema):
-    id= fields.Integer(required=False)
-    order_date = fields.Date(required=False)
-    customer_id = fields.Integer(required=True)
-    
+    id = fields.Integer()
+    order_date = fields.Date()
+    customer_id = fields.Integer()
+    products = fields.Nested(ProductSchema, many=True)  # Include products in the order
+
     class Meta:
-        fields = ('id', 'order_date', 'customer_id', 'items')       # items will be a list of product_ids
+        fields = ('id', 'order_date', 'customer_id', 'products')
 
 
 order_schema = OrderSchema()
 orders_schema = OrderSchema(many=True)
 
+# #
+# Add an order with POST
+# #
 @app.route('/orders', methods=['POST'])
 def add_order():
     try:
-        order_data = order_schema.load(request.json)
+        order_data = request.json
+        order_data['order_date'] = order_data.get('order_date', date.today().isoformat())   # Valid dates only
+        order_data = order_schema.load(order_data)
     except ValidationError as e:
         return jsonify(e.messages), 400
-    
-    new_order = Orders(order_date=date.today(), customer_id = order_data['customer_id'])
 
+    new_order = Orders(order_date=order_data['order_date'], customer_id=order_data['customer_id'])
+
+    missing_products = []
     for item_id in order_data['items']:
-        query = select(Products).filter(Products.id == item_id)
+        query = select(Products).filter(Products.id == item_id) # filter product IDs
         item = db.session.execute(query).scalar()
-        new_order.products.append(item)
-    
+        if item is None:
+            missing_products.append(item_id)
+        else:
+            new_order.products.append(item)
+
+    if missing_products:
+        return jsonify({"Error": f"Products with ids {missing_products} not found"}), 404
+
     db.session.add(new_order)
     db.session.commit()
 
     return jsonify({"Message": "New Order Placed!"}), 201
+
+
+
+# #
+# Read a single order with GET
+# #
+@app.route("/orders/<int:id>", methods=['GET'])
+def get_order(id):
+    query = select(Orders).filter(Orders.id == id)
+    result = db.session.execute(query).scalars().first()  # Get the first order matching the id
+
+    if result is None:
+        return jsonify({"Error": "Order not found"}), 404
+    
+    return order_schema.jsonify(result)  # Serialize the order with products
+
+
+# #
+# Track all YOUR OWN orders with GET
+# #
+@app.route("/orders/customer/<int:customer_id>", methods=['GET'])
+def get_orders_from_cust(customer_id):
+    
+    query = select(Orders).filter(Orders.customer_id == customer_id)    # Filter depending on customer ID
+    result = db.session.execute(query).scalars().all()
+
+    if result is None:
+        return jsonify({"Error": "No orders found for this customer"}), 404
+    
+    return orders_schema.jsonify(result)
 
 
 @app.route("/order_items/<int:id>", methods=['GET'])
